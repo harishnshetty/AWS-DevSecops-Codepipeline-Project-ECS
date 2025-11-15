@@ -9,12 +9,12 @@ env:
 
   variables:
     SONAR_ZIP_URL: "https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-7.3.0.5189-linux-x64.zip"
-    DEP_CHECK_ZIP_URL: "https://github.com/dependency-check/DependencyCheck/releases/download/v12.1.9/dependency-check-12.1.9-release.zip"
 
 phases:
   install:
     runtime-versions:
       nodejs: 20
+      java: corretto11
     commands:
       - echo "Install phase ..."
 
@@ -27,18 +27,19 @@ phases:
         # Install system dependencies (apt-get or yum)
         if command -v apt-get >/dev/null 2>&1; then
           apt-get update -y
-          apt-get install -y --no-install-recommends jq curl unzip wget default-jre-headless
+          apt-get install -y --no-install-recommends jq curl unzip wget
         elif command -v yum >/dev/null 2>&1; then
-          yum install -y jq curl unzip wget java-11-openjdk-headless
+          yum install -y jq curl unzip wget
         else
-          echo "No apt-get/yum found; ensure jq/curl/unzip/wget/java are present in the image"
+          echo "No apt-get/yum found; ensure jq/curl/unzip/wget are present in the image"
         fi
       - |
-        # Verify Java installation for Dependency-Check
+        # Verify Java installation (required by SonarScanner)
         echo "Checking Java installation..."
         java -version || echo "Java version check failed (java may be missing)"
         if ! command -v java >/dev/null 2>&1; then
-          echo "WARNING: Java is required for Dependency-Check but not installed"
+          echo "ERROR: Java is required for SonarScanner but not installed"
+          exit 1
         fi
       - echo "Downloading SonarScanner..."
       - wget -q "$SONAR_ZIP_URL" -O sonar-scanner.zip || curl -sSL "$SONAR_ZIP_URL" -o sonar-scanner.zip
@@ -72,97 +73,19 @@ phases:
           echo "Quality Gate passed or not present."
         fi
 
-post_build:
-  commands:
-    - |
-      echo "=== Post build phase: OWASP Dependency-Check v12.1.9 (EFS-backed cache) ==="
-    - |
-      echo "Checking for dependency files to scan..."
-      find . -name "package.json" -o -name "pom.xml" -o -name "build.gradle" -o -name "*.csproj" -o -name "requirements.txt" | head -10 || echo "No common dependency files found (this may be normal)"
-    - |
-      # EFS paths (adjust if you mounted at a different mountpoint)
-      EFS_ROOT="/mnt/efs"
-      DC_DATA_DIR="$EFS_ROOT/dependency-check-data"       # <-- NVD DB stored here
-      DC_CLI_DIR="$EFS_ROOT/dependency-check-cli"         # <-- unzip CLI here to avoid re-unzip
-      mkdir -p "$DC_DATA_DIR" "$DC_CLI_DIR"
-      chmod 755 "$DC_DATA_DIR" "$DC_CLI_DIR" || true
-      echo "EFS paths prepared:"
-      ls -ld "$EFS_ROOT" "$DC_DATA_DIR" "$DC_CLI_DIR" || true
-    - |
-      echo "Downloading Dependency-Check (if not cached in EFS)..."
-      if [ -f dependency-check.zip ]; then
-        echo "dependency-check.zip already present in workspace"
-      else
-        if wget -q "$DEP_CHECK_ZIP_URL" -O dependency-check.zip; then
-          echo "Downloaded dependency-check.zip via wget"
-        elif curl -sSL "$DEP_CHECK_ZIP_URL" -o dependency-check.zip; then
-          echo "Downloaded dependency-check.zip via curl"
-        else
-          echo "ERROR: Failed to download Dependency-Check from $DEP_CHECK_ZIP_URL"
-          echo "Skipping Dependency-Check analysis"
-          exit 0
-        fi
-      fi
-    - |
-      # If CLI is not already unzipped on EFS, unzip it there (cached)
-      if [ ! -d "$DC_CLI_DIR" ] || [ -z "$(ls -A "$DC_CLI_DIR" 2>/dev/null)" ]; then
-        echo "Unzipping Dependency-Check CLI to EFS cache: $DC_CLI_DIR"
-        if unzip -q dependency-check.zip -d "$DC_CLI_DIR.tmp" && mv "$DC_CLI_DIR.tmp"/* "$DC_CLI_DIR"/ 2>/dev/null || true; then
-          echo "Dependency-Check CLI extracted to $DC_CLI_DIR"
-        else
-          echo "WARNING: Unzip to EFS failed; falling back to workspace unzip"
-          rm -rf "$DC_CLI_DIR.tmp" || true
-          unzip -q dependency-check.zip -d dependency-check || true
-          DC_CLI_DIR="./dependency-check"
-        fi
-      else
-        echo "Dependency-Check CLI already cached on EFS: $DC_CLI_DIR"
-      fi
-    - |
-      # Find the CLI script. Prefer the cached EFS CLI path.
-      DEP_SCRIPT=$(find "$DC_CLI_DIR" -type f -name 'dependency-check.sh' -print -quit 2>/dev/null || true)
-      if [ -z "$DEP_SCRIPT" ]; then
-        echo "dependency-check.sh not found in EFS cache; searching workspace..."
-        DEP_SCRIPT=$(find . -type f -name 'dependency-check.sh' -print -quit 2>/dev/null || true)
-      fi
-      if [ -z "$DEP_SCRIPT" ]; then
-        echo "ERROR: dependency-check.sh not found anywhere"
-        exit 0
-      fi
-      chmod +x "$DEP_SCRIPT" || true
-      echo "Using dependency-check script: $DEP_SCRIPT"
-    - |
-      # Build command - specify --data to point to EFS cache path
-      DC_CMD="$DEP_SCRIPT"
-      echo "Running Dependency-Check (data dir: $DC_DATA_DIR)..."
-      mkdir -p dependency-check-report || true
-
-      "$DC_CMD" \
-        --project "$Project" \
-        --scan . \
-        --data "$DC_DATA_DIR" \
-        --format "HTML" "JSON" "XML" \
-        --out ./dependency-check-report \
-        --enableRetired \
-        --failOnCVSS 0 \
-        || echo "Dependency-Check completed with exit code: $? (continuing build)"
-
-      echo "Dependency-Check reports location:"
-      ls -la dependency-check-report/ || echo "No dependency-check-report directory created"
-    - |
-      echo "=== Build Artifacts Summary ==="
-      echo "Current directory contents:"
-      ls -la
-      echo "EFS cache contents (summary):"
-      ls -la "$DC_CLI_DIR" | head -20 || true
-      ls -la "$DC_DATA_DIR" | head -20 || true
-      echo "Dependency-Check report contents:"
-      ls -la dependency-check-report/ || echo "No dependency-check-report directory"
-
+  post_build:
+    commands:
+      - |
+        echo "=== Post build summary ==="
+      - echo "Current directory contents:"
+      - ls -la
+      - echo "Sonar output (tail):"
+      - tail -n 100 sonar-output.txt || true
+      - echo "Quality Gate result:"
+      - cat result.json || true
 
 artifacts:
   files:
     - sonar-output.txt
     - result.json
-    - dependency-check-report/**/*
   discard-paths: no
