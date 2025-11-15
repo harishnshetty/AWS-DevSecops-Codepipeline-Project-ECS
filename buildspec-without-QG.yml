@@ -78,60 +78,23 @@ phases:
       - echo "Pre build phase ..."
       - apt-get update
       - apt-get install -y jq curl unzip
-      - wget -q https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-7.3.0.5189-linux-x64.zip
+      - wget https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-7.3.0.5189-linux-x64.zip
       - unzip -q sonar-scanner-cli-7.3.0.5189-linux-x64.zip
       - export PATH=$PATH:./sonar-scanner-7.3.0.5189-linux-x64/bin/
-      - echo "Sonar Scanner installed"
   build:
     commands:
       - echo "Build phase ..."
-      - echo "Running SonarQube analysis..."
       - sonar-scanner -Dsonar.login=$LOGIN -Dsonar.host.url=$HOST -Dsonar.projectKey=$Project -Dsonar.organization=$Organization
-      - echo "Analysis completed, checking Quality Gate..."
-      
-      # Wait for analysis to be processed and check Quality Gate status
+      - sleep 10  # Increased sleep to ensure analysis is processed
+      - curl -s "https://sonarcloud.io/api/qualitygates/project_status?projectKey=$Project" > result.json
+      - cat result.json
       - |
-        echo "Waiting for analysis to be processed..."
-        for i in {1..10}; do
-          echo "Attempt $i/10: Checking Quality Gate status..."
-          curl -s -u "$LOGIN:" "https://sonarcloud.io/api/qualitygates/project_status?projectKey=$Project" > result.json
-          
-          PROJECT_STATUS=$(jq -r '.projectStatus.status' result.json)
-          echo "Current status: $PROJECT_STATUS"
-          
-          if [ "$PROJECT_STATUS" = "OK" ] || [ "$PROJECT_STATUS" = "ERROR" ]; then
-            echo "Quality Gate status determined: $PROJECT_STATUS"
-            break
-          elif [ "$PROJECT_STATUS" = "NONE" ]; then
-            echo "Analysis not yet processed, waiting..."
-            sleep 10
-          else
-            echo "Unknown status: $PROJECT_STATUS, waiting..."
-            sleep 10
-          fi
-        done
-        
-        # Final Quality Gate check
-        echo "=== QUALITY GATE RESULT ==="
-        cat result.json
-        echo "==========================="
-        
-        PROJECT_STATUS=$(jq -r '.projectStatus.status' result.json)
-        CONDITIONS=$(jq -r '.projectStatus.conditions' result.json)
-        
-        if [ "$PROJECT_STATUS" = "OK" ]; then
-          echo "✅ Quality Gate PASSED - All conditions met!"
-          echo "Conditions: $CONDITIONS"
-        elif [ "$PROJECT_STATUS" = "ERROR" ]; then
-          echo "❌ Quality Gate FAILED - Build will be marked as failed!"
-          echo "Failed conditions: $CONDITIONS"
-          echo "Detailed report: https://sonarcloud.io/project/overview?id=$Project"
+        if [ $(jq -r '.projectStatus.status' result.json) = "ERROR" ]; then
+          echo "Quality Gate failed! Build will be marked as failed."
           exit 1
         else
-          echo "⚠️  Could not determine Quality Gate status: $PROJECT_STATUS"
-          echo "Proceeding with build, but please check SonarCloud manually: https://sonarcloud.io/project/overview?id=$Project"
+          echo "Quality Gate passed!"
         fi
   post_build:
     commands:
       - echo "Post build phase ..."
-      - echo "Build completed with Quality Gate enforcement"
