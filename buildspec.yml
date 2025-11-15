@@ -20,7 +20,9 @@ phases:
 
   pre_build:
     commands:
-      - echo "Pre build phase ..."      
+      - echo "Pre build phase ..."
+      - |
+        echo "Working dir: $(pwd)"      
       - |
         if command -v apt-get >/dev/null 2>&1; then
           apt-get update -y
