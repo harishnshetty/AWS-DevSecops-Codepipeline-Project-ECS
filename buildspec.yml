@@ -67,14 +67,22 @@ phases:
     commands:
       - |
         echo "Post build phase: Installing and running Trivy file scan"
-      - echo "Installing Trivy using official installation script..."
+      - echo "Installing Trivy..."
       - |
-        # Install Trivy using official script
-        curl -sSL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
+        # Method 1: Direct binary download (most reliable)
+        TRIVY_VERSION=$(curl -s https://api.github.com/repos/aquasecurity/trivy/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+        echo "Downloading Trivy version: $TRIVY_VERSION"
+        
+        # Download and install Trivy
+        wget -q "https://github.com/aquasecurity/trivy/releases/download/${TRIVY_VERSION}/trivy_${TRIVY_VERSION#v}_Linux-64bit.tar.gz" -O trivy.tar.gz || \
+        curl -sSL "https://github.com/aquasecurity/trivy/releases/download/${TRIVY_VERSION}/trivy_${TRIVY_VERSION#v}_Linux-64bit.tar.gz" -o trivy.tar.gz
+        
+        tar -xzf trivy.tar.gz
+        chmod +x trivy
         mv trivy /usr/local/bin/
-        chmod +x /usr/local/bin/trivy
         
         # Verify installation
+        echo "Trivy version:"
         trivy --version
       - |
         echo "Running Trivy filesystem scan..."
@@ -82,27 +90,25 @@ phases:
         mkdir -p trivy-reports
         
         # Run Trivy filesystem scan with multiple output formats
+        echo "Running Trivy filesystem scan (JSON format)..."
         trivy filesystem . \
           --format json \
           --output trivy-reports/trivy-filesystem.json \
           --severity HIGH,CRITICAL \
           --exit-code 0 || echo "Trivy scan completed with findings"
         
-        # Also generate HTML report (need to download template first)
-        echo "Downloading HTML template..."
-        wget -q https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/html.tpl -O trivy-reports/html.tpl || curl -sSL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/html.tpl -o trivy-reports/html.tpl
-        
-        trivy filesystem . \
-          --format template \
-          --template "@/trivy-reports/html.tpl" \
-          --output trivy-reports/trivy-filesystem.html \
-          --severity HIGH,CRITICAL \
-          --exit-code 0 || true
-        
         # Generate SARIF report
+        echo "Running Trivy filesystem scan (SARIF format)..."
         trivy filesystem . \
           --format sarif \
           --output trivy-reports/trivy-filesystem.sarif \
+          --severity HIGH,CRITICAL \
+          --exit-code 0 || true
+        
+        # Generate simple table output to console
+        echo "Running Trivy filesystem scan (table format - console output)..."
+        trivy filesystem . \
+          --format table \
           --severity HIGH,CRITICAL \
           --exit-code 0 || true
         
@@ -112,18 +118,20 @@ phases:
         # Display summary of findings
         if [ -f "trivy-reports/trivy-filesystem.json" ]; then
           echo "=== Trivy Scan Summary ==="
-          COUNT=$(jq '.Results | length' trivy-reports/trivy-filesystem.json)
-          VULNERABILITIES=$(jq '[.Results[].Vulnerabilities[]?] | length' trivy-reports/trivy-filesystem.json)
+          COUNT=$(jq '.Results | length' trivy-reports/trivy-filesystem.json 2>/dev/null || echo "0")
+          VULNERABILITIES=$(jq '[.Results[].Vulnerabilities[]?] | length' trivy-reports/trivy-filesystem.json 2>/dev/null || echo "0")
           echo "Scanned targets: $COUNT"
           echo "Vulnerabilities found: $VULNERABILITIES"
           
-          # Show critical/high counts
-          CRITICAL=$(jq '[.Results[].Vulnerabilities[]? | select(.Severity == "CRITICAL")] | length' trivy-reports/trivy-filesystem.json)
-          HIGH=$(jq '[.Results[].Vulnerabilities[]? | select(.Severity == "HIGH")] | length' trivy-reports/trivy-filesystem.json)
-          echo "CRITICAL: $CRITICAL"
-          echo "HIGH: $HIGH"
+          # Show critical/high counts if available
+          if command -v jq >/dev/null 2>&1; then
+            CRITICAL=$(jq '[.Results[].Vulnerabilities[]? | select(.Severity == "CRITICAL")] | length' trivy-reports/trivy-filesystem.json 2>/dev/null || echo "0")
+            HIGH=$(jq '[.Results[].Vulnerabilities[]? | select(.Severity == "HIGH")] | length' trivy-reports/trivy-filesystem.json 2>/dev/null || echo "0")
+            echo "CRITICAL: $CRITICAL"
+            echo "HIGH: $HIGH"
+          fi
         else
-          echo "Trivy JSON report not found"
+          echo "Trivy JSON report not found or empty"
         fi
       - echo "Post build complete. Listing files:"
       - ls -la
