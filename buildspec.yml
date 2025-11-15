@@ -78,12 +78,12 @@ phases:
       - echo "Preparing Docker/ECR variables..."
       - AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
       - |
-        # If IMAGE_TAG variable was not provided, use CodeBuild short sha fallback (POSIX-safe)
+        # If IMAGE_TAG variable was not provided, use CodeBuild Build Number as fallback
         if [ -z "$IMAGE_TAG" ]; then
-          if [ -n "$CODEBUILD_RESOLVED_SOURCE_VERSION" ]; then
-            # POSIX-safe: take first 7 chars
-            IMAGE_TAG=$(echo "$CODEBUILD_RESOLVED_SOURCE_VERSION" | cut -c1-7)
+          if [ -n "$CODEBUILD_BUILD_NUMBER" ]; then
+            IMAGE_TAG="$CODEBUILD_BUILD_NUMBER"
           else
+            # Fallback to date/time if CodeBuild Number is not available
             IMAGE_TAG=$(date +%Y%m%d%H%M%S)
           fi
         fi
