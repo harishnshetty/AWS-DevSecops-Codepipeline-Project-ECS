@@ -26,7 +26,8 @@ phases:
   pre_build:
     commands:
       - echo "Pre build phase ..."
-      - echo "Working dir: $(pwd)"
+      - |
+        echo "Working dir: $(pwd)"
 
       - |
         # Install utilities if package manager available
