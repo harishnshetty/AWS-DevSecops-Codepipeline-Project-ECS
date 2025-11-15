@@ -69,29 +69,75 @@ env:
 
 phases:
   install:
-    commands:
-      - echo "Install phase ..."
     runtime-versions:
       nodejs: 16
+    commands:
+      - echo "Install phase ..."
   pre_build:
     commands:
       - echo "Pre build phase ..."
-      - apt-get update
-      - apt-get install -y jq
-      - wget https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-7.3.0.5189-linux-x64.zip
-      - echo "Current path is >>>"
-      - sh $pwd
-      - unzip ./sonar-scanner-cli-*.zip
-      - ls $pwd
-      - export PATH=$PATH:./sonar-scanner-*/bin/
+      - echo "Working dir: $(pwd)"
+      #
+      # Install lightweight tools (jq, unzip, wget/curl) using the available package manager
+      #
+      - |
+        if command -v apt-get >/dev/null 2>&1; then
+          echo "Using apt-get to install utilities"
+          apt-get update -y
+          apt-get install -y --no-install-recommends jq unzip wget curl
+        elif command -v yum >/dev/null 2>&1; then
+          echo "Using yum to install utilities"
+          yum install -y jq unzip wget curl
+        else
+          echo "No apt-get or yum found; ensure jq/unzip/wget/curl are present in the image"
+        fi
+      #
+      # Download & install SonarScanner CLI (robust to directory name/version)
+      #
+      - SCANNER_URL="https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-7.3.0.5189-linux-x64.zip"
+      - echo "Downloading SonarScanner from $SCANNER_URL"
+      - wget -q "$SCANNER_URL" -O sonar-scanner.zip || curl -sSL "$SCANNER_URL" -o sonar-scanner.zip
+      - unzip -q sonar-scanner.zip || { echo "unzip failed"; exit 1; }
+      - SCANNER_DIR=$(ls -d sonar-scanner-* 2>/dev/null | head -n1)
+      - if [ -z "$SCANNER_DIR" ]; then echo "ERROR: sonar scanner directory not found after unzip" && ls -la && exit 1; fi
+      - echo "SonarScanner dir: $SCANNER_DIR"
+      - chmod +x "$SCANNER_DIR/bin/sonar-scanner"
+      - export PATH="$PWD/$SCANNER_DIR/bin:$PATH"
+      - echo "PATH after adding scanner: $PATH"
+      - which sonar-scanner || echo "sonar-scanner not found in PATH"
+      - sonar-scanner --version || echo "sonar-scanner --version failed"
   build:
     commands:
       - echo "Build phase ..."
-      - sonar-scanner -Dsonar.login=$LOGIN -Dsonar.host.url=$HOST -Dsonar.projectKey=$Project -Dsonar.organization=$Organization
+      - echo "Running sonar-scanner analysis..."
+      # run sonar-scanner; LOGIN should be your token (in CodeBuild secrets-manager mapping)
+      - sonar-scanner -Dsonar.login="$LOGIN" -Dsonar.host.url="$HOST" -Dsonar.projectKey="$Project" -Dsonar.organization="$Organization"
+      - echo "Waiting a few seconds for Sonar server to record analysis..."
       - sleep 5
-      - curl https://sonarcloud.io/api/qualitygates/project_status?projectKey=$Project >result.json
-      - cat result.json
-      - if [ $(jq -r '.projectStatus.status' result.json) = ERROR ] ; then $CODEBUILD_BUILD_SUCCEEDING -eq 0 ;fi
+      #
+      # Check quality gate status via Sonar API and fail the build if it is ERROR
+      # Use the SONAR host variable and token for auth (token as username and empty password)
+      #
+      - |
+        echo "Querying Sonar quality gate status..."
+        # Use basic auth with token as username and empty password
+        curl -s -u "$LOGIN:" "$HOST/api/qualitygates/project_status?projectKey=$Project" -o result.json || { echo "Failed to query Sonar API"; cat result.json || true; exit 1; }
+        cat result.json
+        STATUS=$(jq -r '.projectStatus.status' result.json)
+        echo "Sonar quality gate status: $STATUS"
+        if [ "$STATUS" = "ERROR" ]; then
+          echo "Quality gate FAILED -> failing build"
+          exit 1
+        else
+          echo "Quality gate OK or WARN ($STATUS) - continuing"
+        fi
   post_build:
     commands:
       - echo "Post build phase ..."
+      - echo "List current directory for artifacts:"
+      - ls -la
+      - echo "Done."
+artifacts:
+  files:
+    - result.json
+  discard-paths: no
