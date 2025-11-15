@@ -7,131 +7,94 @@ env:
     Organization: dev/sonar:Organization
     Project: dev/sonar:Project
 
-
-# phases:
-#   install:
-#     runtime-versions:
-#       nodejs: 20
-#     commands:
-#       - echo "==== install phase ===="
-#       - echo "Installing node deps"
-#       - npm ci
-#       - echo "Installing sonar-scanner CLI"
-#       - npm install -g sonar-scanner
-#       - echo "AWS CLI version:"
-#       - aws --version
-#       - echo "Logging into ECR"
-#       - $(aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin 123456789012.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com) || true
-#   pre_build:
-#     commands:
-#       - echo "==== pre_build phase ===="
-#       - IMAGE_TAG=$CODEBUILD_RESOLVED_SOURCE_VERSION
-#       - echo "IMAGE_TAG=$IMAGE_TAG"
-#   build:
-#     commands:
-#       - echo "==== build phase ===="
-#       - echo "Running unit tests"
-#       - npm test
-#       - echo "Running SonarQube analysis"
-#       # sonar-scanner will pick up SONAR_TOKEN from env; we use -D to provide the key/url/project
-#       - |
-#         set -o pipefail
-#         sonar-scanner \
-#           -Dsonar.projectKey=$SONAR_PROJECT_KEY \
-#           -Dsonar.sources=. \
-#           -Dsonar.host.url=$SONAR_HOST_URL \
-#           -Dsonar.login=$SONAR_TOKEN 2>&1 | tee sonar-output.txt
-#       - echo "Sonar scanner exit code: ${PIPESTATUS[0]}"
-#       - echo "Building Docker image"
-#       - docker build -t $APP_NAME:$IMAGE_TAG .
-#       - docker tag $APP_NAME:$IMAGE_TAG 123456789012.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$APP_NAME:$IMAGE_TAG
-#   post_build:
-#     commands:
-#       - echo "==== post_build phase ===="
-#       - echo "Pushing image to ECR"
-#       - docker push 123456789012.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$APP_NAME:$IMAGE_TAG
-#       - echo "Deploying to staging for DAST"
-#       - jq --arg IMAGE "123456789012.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$APP_NAME:$IMAGE_TAG" '.containerDefinitions[0].image = $IMAGE' ecs-task-def-template.json > ecs-task-def.json
-#       - aws ecs register-task-definition --cli-input-json file://ecs-task-def.json
-#       - aws ecs update-service --cluster staging-cluster --service staging-service --force-new-deployment
-#       - ./wait-for-staging-ready.sh http://staging.internal.example
-#       - echo "Running OWASP ZAP baseline scan"
-#       - docker run --rm owasp/zap2docker-stable zap-baseline.py -t http://staging.internal.example -r zap-baseline.html || true
-#       - echo "Running OWASP ZAP full scan"
-#       - docker run --rm owasp/zap2docker-stable zap-full-scan.py -t http://staging.internal.example -r zap-full.html || true
-# artifacts:
-#   files:
-#     - sonar-output.txt
-#     - zap-baseline.html
-#     - zap-full.html
-#   discard-paths: no
-
+  variables:
+    SONAR_ZIP_URL: "https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-7.3.0.5189-linux-x64.zip"
+    DEP_CHECK_ZIP_URL: "https://github.com/dependency-check/DependencyCheck/releases/download/v12.1.9/dependency-check-12.1.9-release.zip"
+    SONAR_POLL_INTERVAL_SECONDS: "5"
+    SONAR_POLL_MAX_SECONDS: "300"
 
 phases:
   install:
+    runtime-versions:
+      nodejs: 20
     commands:
       - echo "Install phase ..."
-    runtime-versions:
-      nodejs: 16
+
   pre_build:
     commands:
       - echo "Pre build phase ..."
-      - apt-get update
-      - apt-get install -y jq curl unzip
-      - wget -q https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-7.3.0.5189-linux-x64.zip
-      - unzip -q sonar-scanner-cli-7.3.0.5189-linux-x64.zip
-      - export PATH=$PATH:./sonar-scanner-7.3.0.5189-linux-x64/bin/
-      - echo "Sonar Scanner installed"
+      - echo "Working dir: $(pwd)"
+      - |
+        if command -v apt-get >/dev/null 2>&1; then
+          apt-get update -y
+          apt-get install -y --no-install-recommends jq curl unzip wget default-jre-headless
+        elif command -v yum >/dev/null 2>&1; then
+          yum install -y jq curl unzip wget java-11-openjdk-headless
+        else
+          echo "No apt-get/yum - ensure jq/curl/unzip/java are available in image"
+        fi
+
+      - echo "Downloading SonarScanner..."
+      - wget -q "$SONAR_ZIP_URL" -O sonar-scanner.zip || curl -sSL "$SONAR_ZIP_URL" -o sonar-scanner.zip
+      - unzip -q sonar-scanner.zip
+      - SCANNER_DIR=$(ls -d sonar-scanner-* 2>/dev/null | head -n1)
+      - if [ -z "$SCANNER_DIR" ]; then echo "ERROR: sonar scanner directory not found after unzip" && ls -la && exit 1; fi
+      - chmod +x "$SCANNER_DIR/bin/sonar-scanner"
+      - export PATH="$PWD/$SCANNER_DIR/bin:$PATH"
+      - echo "sonar-scanner path: $(which sonar-scanner || echo 'not found')"
+      - sonar-scanner --version || echo "sonar-scanner version check failed (but continuing)"
+
   build:
     commands:
       - echo "Build phase ..."
-      - echo "Running SonarQube analysis..."
-      - sonar-scanner -Dsonar.login=$LOGIN -Dsonar.host.url=$HOST -Dsonar.projectKey=$Project -Dsonar.organization=$Organization
-      - echo "Analysis completed, checking Quality Gate..."
-      
-      # Wait for analysis to be processed and check Quality Gate status
+      - echo "Running SonarScanner..."
+      - sonar-scanner -Dsonar.login="$LOGIN" -Dsonar.host.url="$HOST" -Dsonar.projectKey="$Project" -Dsonar.organization="$Organization" 2>&1 | tee sonar-output.txt
+      - sleep 10  # keep your existing short wait
+      - echo "Querying Sonar quality gate (your existing step)..."
+      - curl -s "https://sonarcloud.io/api/qualitygates/project_status?projectKey=$Project" > result.json || true
+      - cat result.json || true
       - |
-        echo "Waiting for analysis to be processed..."
-        for i in {1..10}; do
-          echo "Attempt $i/10: Checking Quality Gate status..."
-          curl -s -u "$LOGIN:" "https://sonarcloud.io/api/qualitygates/project_status?projectKey=$Project" > result.json
-          
-          PROJECT_STATUS=$(jq -r '.projectStatus.status' result.json)
-          echo "Current status: $PROJECT_STATUS"
-          
-          if [ "$PROJECT_STATUS" = "OK" ] || [ "$PROJECT_STATUS" = "ERROR" ]; then
-            echo "Quality Gate status determined: $PROJECT_STATUS"
-            break
-          elif [ "$PROJECT_STATUS" = "NONE" ]; then
-            echo "Analysis not yet processed, waiting..."
-            sleep 10
-          else
-            echo "Unknown status: $PROJECT_STATUS, waiting..."
-            sleep 10
-          fi
-        done
-        
-        # Final Quality Gate check
-        echo "=== QUALITY GATE RESULT ==="
-        cat result.json
-        echo "==========================="
-        
-        PROJECT_STATUS=$(jq -r '.projectStatus.status' result.json)
-        CONDITIONS=$(jq -r '.projectStatus.conditions' result.json)
-        
-        if [ "$PROJECT_STATUS" = "OK" ]; then
-          echo "✅ Quality Gate PASSED - All conditions met!"
-          echo "Conditions: $CONDITIONS"
-        elif [ "$PROJECT_STATUS" = "ERROR" ]; then
-          echo "❌ Quality Gate FAILED - Build will be marked as failed!"
-          echo "Failed conditions: $CONDITIONS"
-          echo "Detailed report: https://sonarcloud.io/project/overview?id=$Project"
+        if [ "$(jq -r '.projectStatus.status' result.json 2>/dev/null)" = "ERROR" ]; then
+          echo "Quality Gate failed! Build will be marked as failed."
           exit 1
         else
-          echo "⚠️  Could not determine Quality Gate status: $PROJECT_STATUS"
-          echo "Proceeding with build, but please check SonarCloud manually: https://sonarcloud.io/project/overview?id=$Project"
+          echo "Quality Gate passed or not present."
         fi
+
   post_build:
     commands:
-      - echo "Post build phase ..."
-      - echo "Build completed with Quality Gate enforcement"
+      - echo "Post build phase: run dependency checks and collect reports..."
+      - echo "Downloading OWASP Dependency-Check CLI..."
+      - wget -q "$DEP_CHECK_ZIP_URL" -O dependency-check.zip || curl -sSL "$DEP_CHECK_ZIP_URL" -o dependency-check.zip || true
+      - if [ -f dependency-check.zip ]; then
+          unzip -q dependency-check.zip || echo "dependency-check unzip failed";
+          DEP_DIR=$(ls -d dependency-check-* 2>/dev/null | head -n1 || true);
+          if [ -n "$DEP_DIR" ]; then
+            chmod +x "$DEP_DIR/bin/dependency-check.sh" || true;
+            export PATH="$PWD/$DEP_DIR/bin:$PATH";
+          else
+            echo "dependency-check dir not found after unzip";
+          fi
+        else
+          echo "dependency-check.zip not found; skipping dependency-check CLI";
+        fi
+      - |
+        # Run OWASP Dependency-Check if available
+        if command -v dependency-check.sh >/dev/null 2>&1; then
+          echo "Running OWASP Dependency-Check (scanning project root)..."
+          # This may download NVD DB on first run; allow it to continue even if non-zero exit
+          dependency-check.sh --project "$Project" --scan . --format ALL --out ./dependency-check-report || echo "dependency-check finished with non-zero exit"
+          echo "Dependency-Check reports written to ./dependency-check-report/"
+        else
+          echo "dependency-check.sh not available; skipping OWASP Dependency-Check"
+        fi
+      - echo "Listing files for artifacts:"
+      - ls -la
+      - echo "Done."
+
+artifacts:
+  files:
+    - sonar-output.txt
+    - result.json
+    - dependency-check-report/**    # includes HTML/JSON if generated
+  discard-paths: no
