@@ -22,9 +22,9 @@ phases:
     commands:
       - echo "Pre build phase ..."
       - |
-        echo "Working dir: $(pwd)"      
+        echo "Working dir: $(pwd)"
       - |
-        # Install system dependencies
+        # Install system dependencies (apt-get or yum)
         if command -v apt-get >/dev/null 2>&1; then
           apt-get update -y
           apt-get install -y --no-install-recommends jq curl unzip wget default-jre-headless
@@ -36,7 +36,7 @@ phases:
       - |
         # Verify Java installation for Dependency-Check
         echo "Checking Java installation..."
-        java -version || echo "Java version check failed"
+        java -version || echo "Java version check failed (java may be missing)"
         if ! command -v java >/dev/null 2>&1; then
           echo "WARNING: Java is required for Dependency-Check but not installed"
         fi
@@ -50,7 +50,7 @@ phases:
           ls -la
           exit 1
         fi
-      - chmod +x "$SCANNER_DIR/bin/sonar-scanner"
+      - chmod +x "$SCANNER_DIR/bin/sonar-scanner" || true
       - export PATH="$PWD/$SCANNER_DIR/bin:$PATH"
       - |
         echo "sonar-scanner path: $(which sonar-scanner || echo 'not found')"
@@ -88,22 +88,27 @@ phases:
         else
           echo "ERROR: Failed to download Dependency-Check from $DEP_CHECK_ZIP_URL"
           echo "Skipping Dependency-Check analysis"
+          # keep build success if you want to continue despite missing dependency-check
           exit 0
         fi
       - |
+        # Unzip into a fixed directory so we can reliably find the script
         if [ -f dependency-check.zip ]; then
-          echo "Unzipping Dependency-Check..."
-          if unzip -q dependency-check.zip; then
-            DEP_DIR=$(ls -d dependency-check-* 2>/dev/null | head -n1)
-            if [ -n "$DEP_DIR" ] && [ -d "$DEP_DIR" ]; then
-              echo "Dependency-Check directory found: $DEP_DIR"
-              chmod +x "$DEP_DIR/bin/dependency-check.sh"
-              export PATH="$PWD/$DEP_DIR/bin:$PATH"
-              echo "Dependency-Check version check:"
-              "$DEP_DIR/bin/dependency-check.sh" --version || echo "Version check failed"
+          echo "Unzipping Dependency-Check to ./dependency-check..."
+          if unzip -q dependency-check.zip -d dependency-check; then
+            echo "Looking for dependency-check script under ./dependency-check..."
+            DEP_SCRIPT=$(find dependency-check -type f -name 'dependency-check.sh' -print -quit || true)
+            if [ -n "$DEP_SCRIPT" ]; then
+              echo "Found dependency-check script: $DEP_SCRIPT"
+              chmod +x "$DEP_SCRIPT" || true
+              DEP_DIR=$(dirname "$DEP_SCRIPT")
+              # add the script's directory to PATH to preserve compatibility with existing checks
+              export PATH="$PWD/$DEP_DIR:$PATH"
+              echo "Added $PWD/$DEP_DIR to PATH"
             else
-              echo "ERROR: Valid dependency-check directory not found after unzip"
-              ls -la
+              echo "ERROR: dependency-check script not found after unzip"
+              ls -la dependency-check || true
+              # Do not fail the whole build if you want to continue; exit non-zero to fail instead
               exit 0
             fi
           else
@@ -115,13 +120,21 @@ phases:
           exit 0
         fi
       - |
-        if command -v dependency-check.sh >/dev/null 2>&1; then
-          echo "Running Dependency-Check scan..."
-          # Create report directory first
-          mkdir -p dependency-check-report
-          
-          # Run dependency check with specific formats and continue on error
-          dependency-check.sh \
+        # Use the absolute script path if available; fallback to command name if present on PATH
+        if [ -n "$DEP_SCRIPT" ] && [ -x "$DEP_SCRIPT" ]; then
+          DC_CMD="$DEP_SCRIPT"
+        elif command -v dependency-check.sh >/dev/null 2>&1; then
+          DC_CMD="$(command -v dependency-check.sh)"
+        else
+          DC_CMD=""
+        fi
+
+        if [ -n "$DC_CMD" ]; then
+          echo "Running Dependency-Check scan using: $DC_CMD"
+          mkdir -p dependency-check-report || true
+
+          # run dependency-check and continue (don't fail pipeline on exit code unless you want to)
+          "$DC_CMD" \
             --project "$Project" \
             --scan . \
             --format "HTML" "JSON" "XML" \
@@ -129,12 +142,13 @@ phases:
             --enableRetired \
             --failOnCVSS 0 \
             || echo "Dependency-Check completed with exit code: $? (continuing build)"
-          
+
           echo "Dependency-Check reports location:"
           ls -la dependency-check-report/ || echo "No dependency-check-report directory created"
         else
-          echo "ERROR: dependency-check.sh command not found in PATH"
+          echo "ERROR: dependency-check.sh command not found (no script available)"
           echo "PATH: $PATH"
+          # choose whether this should fail the build or not; keeping exit 0 to continue
           exit 0
         fi
       - |
