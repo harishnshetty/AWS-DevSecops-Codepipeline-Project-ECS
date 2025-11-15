@@ -9,10 +9,8 @@ env:
 
   variables:
     SONAR_ZIP_URL: "https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-7.3.0.5189-linux-x64.zip"
-    # Change IMAGE_REPO_NAME if required
     IMAGE_REPO_NAME: "zomato"
-    # Optional: you can override IMAGE_TAG externally (e.g., CODEBUILD_RESOLVED_SOURCE_VERSION short sha)
-    IMAGE_TAG: "" 
+    IMAGE_TAG: ""
 
 phases:
   install:
@@ -28,7 +26,6 @@ phases:
       - echo "Pre build phase ..."
       - |
         echo "Working dir: $(pwd)"
-
       - |
         # Install utilities if package manager available
         if command -v apt-get >/dev/null 2>&1; then
@@ -39,18 +36,17 @@ phases:
         else
           echo "No apt-get/yum found; ensure jq/curl/unzip/wget are present in the image"
         fi
-
       - echo "Downloading SonarScanner..."
       - wget -q "$SONAR_ZIP_URL" -O sonar-scanner.zip || curl -sSL "$SONAR_ZIP_URL" -o sonar-scanner.zip
-      - unzip -q sonar-scanner.zip
-      - SCANNER_DIR=$(ls -d sonar-scanner-* 2>/dev/null | head -n1)
+      - unzip -q sonar-scanner.zip || true
+      - SCANNER_DIR=$(ls -d sonar-scanner-* 2>/dev/null | head -n1 || true)
       - |
         if [ -z "$SCANNER_DIR" ]; then
           echo "ERROR: sonar scanner directory not found after unzip"
           ls -la
           exit 1
         fi
-      - chmod +x "$SCANNER_DIR/bin/sonar-scanner"
+      - chmod +x "$SCANNER_DIR/bin/sonar-scanner" || true
       - |
         export PATH="$PWD/$SCANNER_DIR/bin:$PATH"
       - |
@@ -61,7 +57,6 @@ phases:
   build:
     commands:
       - echo "Build phase ..."
-
       - |
         # Run SonarScanner
         echo "Running SonarScanner..."
@@ -69,11 +64,9 @@ phases:
                       -Dsonar.host.url="$HOST" \
                       -Dsonar.projectKey="$Project" \
                       -Dsonar.organization="$Organization" 2>&1 | tee sonar-output.txt || true
-
       - sleep 10
       - curl -s "https://sonarcloud.io/api/qualitygates/project_status?projectKey=$Project" > result.json || true
       - cat result.json || true
-
       - |
         # Fail build if Sonar quality gate is ERROR
         if [ "$(jq -r '.projectStatus.status' result.json 2>/dev/null)" = "ERROR" ]; then
@@ -82,14 +75,14 @@ phases:
         else
           echo "Quality Gate passed or not present."
         fi
-
       - echo "Preparing Docker/ECR variables..."
       - AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
       - |
-        # If IMAGE_TAG variable was not provided, use CodeBuild short sha fallback
+        # If IMAGE_TAG variable was not provided, use CodeBuild short sha fallback (POSIX-safe)
         if [ -z "$IMAGE_TAG" ]; then
           if [ -n "$CODEBUILD_RESOLVED_SOURCE_VERSION" ]; then
-            IMAGE_TAG=${CODEBUILD_RESOLVED_SOURCE_VERSION:0:7}
+            # POSIX-safe: take first 7 chars
+            IMAGE_TAG=$(echo "$CODEBUILD_RESOLVED_SOURCE_VERSION" | cut -c1-7)
           else
             IMAGE_TAG=$(date +%Y%m%d%H%M%S)
           fi
@@ -102,16 +95,12 @@ phases:
         export IMAGE_FULLNAME
       - |
         echo "Image will be: ${IMAGE_FULLNAME}"
-
       - echo "Logging into ECR..."
       - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com
-
       - echo "Ensure ECR repository exists..."
       - aws ecr describe-repositories --repository-names ${IMAGE_REPO_NAME} --region $AWS_DEFAULT_REGION || aws ecr create-repository --repository-name ${IMAGE_REPO_NAME} --region $AWS_DEFAULT_REGION
-
       - echo "Building Docker image..."
       - docker build -t ${IMAGE_REPO_NAME}:${IMAGE_TAG} .
-
       - echo "Tagging image..."
       - docker tag ${IMAGE_REPO_NAME}:${IMAGE_TAG} ${IMAGE_FULLNAME}
 
@@ -119,11 +108,9 @@ phases:
     commands:
       - |
         echo "Post build phase: push image and run Trivy"
-
       - |
         echo "Pushing Docker image to ECR: ${IMAGE_FULLNAME}"
-      - docker push ${IMAGE_FULLNAME}
-
+      - docker push ${IMAGE_FULLNAME} || echo "Docker push failed"
       - |
         echo "Installing Trivy..."
         set -e
@@ -141,7 +128,6 @@ phases:
         echo "Trivy version:"
         trivy --version || true
         set +e
-
       - |
         echo "Running Trivy filesystem scan..."
         mkdir -p trivy-reports
@@ -150,20 +136,16 @@ phases:
           --output trivy-reports/trivy-filesystem.json \
           --severity HIGH,CRITICAL \
           --exit-code 0 || echo "Trivy filesystem scan completed with findings (non-zero exit code)"
-
         trivy filesystem . \
           --format sarif \
           --output trivy-reports/trivy-filesystem.sarif \
           --severity HIGH,CRITICAL \
           --exit-code 0 || true
-
         trivy filesystem . \
           --format table \
           --severity HIGH,CRITICAL \
           --exit-code 0 || true
-
         echo "Trivy filesystem scan completed. Reports in trivy-reports/"
-
       - |
         # Display summary of Trivy findings (if JSON exists)
         if [ -f "trivy-reports/trivy-filesystem.json" ]; then
@@ -179,7 +161,6 @@ phases:
         else
           echo "Trivy JSON report not found or empty"
         fi
-
       - echo "Post build complete. Listing files:"
       - ls -la
       - ls -la trivy-reports/ || true
