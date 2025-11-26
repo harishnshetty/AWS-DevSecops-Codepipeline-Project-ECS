@@ -152,12 +152,14 @@ phases:
 
   post_build:
     commands:
-      - echo "Post-build: run image scan before push"
+      - |
+        echo "Post-build: run image scan before push"
 
       # -----------------------------
       # INSTALL TRIVY FIXED VERSION
       # -----------------------------
-      - echo "Installing Trivy from: $TRIVY_URL"
+      - |
+        echo "Installing Trivy from: $TRIVY_URL"
       - wget -q "$TRIVY_URL" -O trivy.tar.gz
       - tar -xzf trivy.tar.gz || true
       # trivy binary may unpack as 'trivy' in working dir; handle idempotently
@@ -238,7 +240,8 @@ phases:
         echo "Pushing Docker image to ECR: ${IMAGE_FULLNAME}"
         docker push ${IMAGE_FULLNAME} || echo "Docker push failed (check auth/permissions)"
 
-      - echo "Post build done. Listing reports:"
+      - |
+        echo "Post build done. Listing reports:"
       - ls -la trivy-reports/ || true
       - ls -la dependency-check-reports/ || true
 
