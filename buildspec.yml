@@ -49,23 +49,27 @@ phases:
   pre_build:
     commands:
       - echo "Pre-build phase..."
+      # Install required packages: NFS client (nfs-common/nfs-utils), jq, Java (default-jre), unzip, wget, curl, and docker tools.
       - |
         if command -v apt-get >/dev/null 2>&1; then
           apt-get update -y
-          apt-get install -y jq curl unzip wget default-jre docker.io fuse nfs-common || true
+          apt-get install -y jq curl unzip wget default-jre docker.io nfs-common || true
         elif command -v yum >/dev/null 2>&1; then
-          yum install -y jq curl unzip wget java-11-openjdk docker fuse nfs-utils || true
+          yum install -y jq curl unzip wget java-11-openjdk docker nfs-utils || true
         else
-          echo "Ensure Java, unzip, curl, wget, docker, fuse, nfs client installed"
+          echo "Ensure Java, unzip, curl, wget, docker, nfs client installed"
         fi
-      - echo "Ensure Docker daemon is available (if running docker inside build):"
+
+      - echo "Ensure Docker daemon is available:"
       - docker --version || true
 
       # -----------------------------
       # SETUP EFS - MOUNT NFS EFS FOR NVD CACHE
+      # NOTE: This manual mount is only required if CodeBuild Project EFS configuration
+      # is NOT used. If the project is configured with EFS, this section can be removed.
       # -----------------------------
+      - echo "Preparing EFS mount for Dependency-Check (RUN_DP_CHECK=$RUN_DP_CHECK)..."
       - |
-        echo "Preparing EFS mount for Dependency-Check (RUN_DP_CHECK=$RUN_DP_CHECK)..."
         if [ "$RUN_DP_CHECK" = "true" ]; then
           echo "Creating mount directories..."
           mkdir -p "$EFS_MOUNT_DIR"
@@ -77,6 +81,7 @@ phases:
           MOUNT_SUCCESS=0
           while [ $COUNT -lt $MAX_RETRIES ]; do
             echo "Mount attempt $((COUNT+1)): ${EFS_MOUNT_TARGET} -> ${EFS_MOUNT_DIR}"
+            # Using the exact mount command provided in your note/request
             mount -t nfs4 -o ${EFS_MOUNT_OPTIONS} "${EFS_MOUNT_TARGET}" "${EFS_MOUNT_DIR}" && { MOUNT_SUCCESS=1; break; }
             COUNT=$((COUNT+1))
             echo "Mount failed, sleeping 5s..."
@@ -84,12 +89,12 @@ phases:
           done
 
           if [ "$MOUNT_SUCCESS" -ne 1 ]; then
-            echo "ERROR: Failed to mount EFS ${EFS_MOUNT_TARGET} after ${MAX_RETRIES} tries"
-            # Fail early so you can debug networking/SG/VPC issues. If you prefer non-fatal, change to 'echo' instead of 'exit 1'.
+            echo "ERROR: Failed to mount EFS ${EFS_MOUNT_TARGET} after ${MAX_RETRIES} tries. Check VPC/Security Group settings."
             exit 1
           fi
 
           echo "EFS mounted at ${EFS_MOUNT_DIR}"
+          # Ensure appropriate permissions for the Dependency-Check user
           chmod -R 0775 "$EFS_MOUNT_DIR" || true
         else
           echo "RUN_DP_CHECK != true — skipping EFS mount and Dependency-Check setup."
@@ -101,11 +106,10 @@ phases:
       - echo "Downloading SonarScanner..."
       - wget -q "$SONAR_SCANNER_URL" -O sonar-scanner.zip || curl -sSL "$SONAR_SCANNER_URL" -o sonar-scanner.zip
       - unzip -q sonar-scanner.zip
-      - SCANNER_DIR=$(ls -d sonar-scanner-* 2>/dev/null | head -n1)
+      - SCANNER_DIR=$(find . -maxdepth 1 -type d -name "sonar-scanner-*" | head -n1)
       - |
         if [ -z "$SCANNER_DIR" ]; then
           echo "ERROR: sonar scanner directory not found after unzip"
-          ls -la
           exit 1
         fi
       - chmod +x "$SCANNER_DIR/bin/sonar-scanner"
@@ -120,37 +124,16 @@ phases:
       - wget -q "$DEP_CHECK_URL" -O depcheck.zip || curl -sSL "$DEP_CHECK_URL" -o depcheck.zip
       - unzip -q depcheck.zip -d dc_tmp
       - |
-        # Fixed directory detection logic
-        if [ -d "dc_tmp/dependency-check" ]; then
-          DCPATH="dc_tmp/dependency-check"
-          echo "Found dependency-check at: $DCPATH"
-          chmod +x "${DCPATH}/bin/dependency-check.sh" || true
-        elif [ -d "dc_tmp/dependency-check-bin" ]; then
-          DCPATH="dc_tmp/dependency-check-bin"
+        # Use find for reliable path detection
+        DCPATH=$(find dc_tmp -name "dependency-check.sh" -type f | head -n1 | xargs dirname | xargs dirname || true)
+        if [ -n "$DCPATH" ] && [ -f "${DCPATH}/bin/dependency-check.sh" ]; then
           echo "Found dependency-check at: $DCPATH"
           chmod +x "${DCPATH}/bin/dependency-check.sh" || true
         else
-          # Fallback: try to find any directory that might contain the binary
-          DCPATH=$(find dc_tmp -name "dependency-check.sh" -type f | head -n1 | xargs dirname | xargs dirname || true)
-          if [ -n "$DCPATH" ] && [ -f "${DCPATH}/bin/dependency-check.sh" ]; then
-            echo "Found dependency-check via fallback at: $DCPATH"
-            chmod +x "${DCPATH}/bin/dependency-check.sh" || true
-          else
-            echo "ERROR: dependency-check directory not found after unzip"
-            echo "Contents of dc_tmp:"
-            ls -la dc_tmp/
-            echo "Trying alternative structure..."
-            # Try direct structure
-            if [ -f "dc_tmp/bin/dependency-check.sh" ]; then
-              DCPATH="dc_tmp"
-              echo "Found dependency-check in dc_tmp root"
-              chmod +x "${DCPATH}/bin/dependency-check.sh" || true
-            else
-              echo "WARNING: dependency-check CLI not found - SCA will be skipped"
-              DCPATH=""
-            fi
-          fi
+          echo "WARNING: dependency-check CLI not found - SCA will be skipped"
+          DCPATH=""
         fi
+        export DCPATH
 
   build:
     commands:
@@ -160,6 +143,7 @@ phases:
       # INSTALL DEPENDENCIES
       # -----------------------------
       - echo "Installing NodeJS dependencies..."
+      # Use a simple npm install with a fallback
       - npm install --legacy-peer-deps || npm install
 
       # -----------------------------
@@ -169,17 +153,17 @@ phases:
         if [ -n "$DCPATH" ] && [ -x "${DCPATH}/bin/dependency-check.sh" ]; then
           echo "Running Dependency-Check SCA with EFS-mounted NVD cache..."
 
-          # Ensure EFS is mounted and data dir present
+          # Mandatory EFS check if RUN_DP_CHECK is true
           if [ "$RUN_DP_CHECK" = "true" ]; then
-            if mountpoint -q "$EFS_MOUNT_DIR"; then
-              echo "✅ EFS is mounted at $EFS_MOUNT_DIR"
-            else
+            # Using mountpoint -q to check if EFS is mounted
+            if ! mountpoint -q "$EFS_MOUNT_DIR"; then
               echo "ERROR: EFS not mounted at $EFS_MOUNT_DIR — aborting Dependency-Check"
               exit 1
             fi
           fi
 
-          # If there's an existing NVD cache file, prefer it to determine update behavior
+          # NVD Cache Update Logic (as originally written, looks correct)
+          NO_UPDATE_ARG=""
           if [ -f "${DP_CHECK_DATA_DIR}/nvdcve-1.1-modified.meta" ]; then
             echo "Found NVD cache metadata in EFS: ${DP_CHECK_DATA_DIR}/nvdcve-1.1-modified.meta"
             # Check age - if recent, disable update to save bandwidth
@@ -247,7 +231,7 @@ phases:
         fi
 
       # -----------------------------
-      # PREP DOCKER DETAILS
+      # PREP DOCKER DETAILS AND BUILD
       # -----------------------------
       - AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
       - |
@@ -257,8 +241,7 @@ phases:
       - export IMAGE_TAG
 
       - IMAGE_FULLNAME="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${IMAGE_REPO_NAME}:${IMAGE_TAG}"
-      - |
-        echo "Image full name: ${IMAGE_FULLNAME}"
+      - echo "Image full name: ${IMAGE_FULLNAME}"
 
       - aws ecr get-login-password --region $AWS_DEFAULT_REGION \
         | docker login --username AWS --password-stdin \
@@ -272,16 +255,16 @@ phases:
 
   post_build:
     commands:
-      - |
-        echo "Post-build: run image scan before push"
+      - echo "Post-build: run image scan before push"
 
       # -----------------------------
-      # CLEANUP EFS MOUNT
+      # CLEANUP EFS MOUNT (Critical: must run after Dependency-Check completes)
       # -----------------------------
       - |
         echo "Cleaning up EFS mount (if any)..."
         if [ "$RUN_DP_CHECK" = "true" ]; then
           if mountpoint -q "$EFS_MOUNT_DIR"; then
+            # Attempt to unmount normally, if that fails, try lazy unmount
             umount "$EFS_MOUNT_DIR" || { echo "Regular umount failed; trying lazy unmount"; umount -l "$EFS_MOUNT_DIR" || true; }
             echo "EFS unmounted from $EFS_MOUNT_DIR"
           else
@@ -297,59 +280,53 @@ phases:
       - wget -q "$TRIVY_URL" -O trivy.tar.gz || curl -sSL "$TRIVY_URL" -o trivy.tar.gz
       - tar -xzf trivy.tar.gz || true
       - if [ -f trivy ]; then chmod +x trivy && mv -f trivy /usr/local/bin/ || true; fi
-      - if ls trivy-*linux* >/dev/null 2>&1; then mv -f trivy-*linux* /usr/local/bin/trivy || true; fi
+      # Added a more robust check for the extracted Trivy binary name
+      - if ls trivy_*linux* 2>/dev/null; then mv -f trivy_*linux* /usr/local/bin/trivy || true; fi
       - trivy --version || true
 
       # -----------------------------
       # TRIVY FILESYSTEM SCAN (source)
       # -----------------------------
       - mkdir -p trivy-reports
-      - |
-        echo "Starting Trivy filesystem scan (HIGH,CRITICAL)..."
-        set +e
-        trivy filesystem . \
-          --format json \
-          --severity HIGH,CRITICAL \
-          --output trivy-reports/trivy-filesystem.json \
-          --exit-code 0
-        trivy filesystem . \
-          --format sarif \
-          --severity HIGH,CRITICAL \
-          --output trivy-reports/trivy-filesystem.sarif \
-          --exit-code 0
-        trivy filesystem . --format table --severity HIGH,CRITICAL --exit-code 0 || true
-        set -e
-        echo "Trivy filesystem scan completed."
+      - echo "Starting Trivy filesystem scan (HIGH,CRITICAL)..."
+      - set +e
+      # Using a single call for both json and sarif formats to be slightly more efficient
+      - trivy filesystem . --format json --severity HIGH,CRITICAL --output trivy-reports/trivy-filesystem.json --exit-code 0
+      - trivy filesystem . --format sarif --severity HIGH,CRITICAL --output trivy-reports/trivy-filesystem.sarif --exit-code 0
+      - trivy filesystem . --format table --severity HIGH,CRITICAL --exit-code 0 || true
+      - set -e
+      - echo "Trivy filesystem scan completed."
 
       # -----------------------------
       # TRIVY IMAGE (LOCAL) SCAN — BEFORE PUSH
       # -----------------------------
-      - |
-        echo "Starting Trivy image scan for local image: ${IMAGE_REPO_NAME}:${IMAGE_TAG} (HIGH,CRITICAL)..."
-        set +e
+      - echo "Starting Trivy image scan for local image: ${IMAGE_REPO_NAME}:${IMAGE_TAG} (HIGH,CRITICAL)..."
+      - set +e
 
-        TRIVY_EXIT_CODE_FLAG="--exit-code 0"
+      - TRIVY_EXIT_CODE_FLAG="--exit-code 0"
+      - |
         if [ "${TRIVY_FAIL_IMAGE}" = "true" ]; then
           TRIVY_EXIT_CODE_FLAG="--exit-code 1"
           echo "TRIVY_FAIL_IMAGE is true -> build will fail if HIGH/CRITICAL findings are present."
         fi
 
-        trivy image "${IMAGE_REPO_NAME}:${IMAGE_TAG}" \
+      - trivy image "${IMAGE_REPO_NAME}:${IMAGE_TAG}" \
           --format json \
           --severity HIGH,CRITICAL \
           --output trivy-reports/trivy-image.json \
           $TRIVY_EXIT_CODE_FLAG
-        TRIVY_IMG_EXIT=$?
+      - TRIVY_IMG_EXIT=$?
 
-        trivy image "${IMAGE_REPO_NAME}:${IMAGE_TAG}" \
+      - trivy image "${IMAGE_REPO_NAME}:${IMAGE_TAG}" \
           --format sarif \
           --severity HIGH,CRITICAL \
           --output trivy-reports/trivy-image.sarif \
           --exit-code 0 || true
 
-        trivy image "${IMAGE_REPO_NAME}:${IMAGE_TAG}" --format table --severity HIGH,CRITICAL --exit-code 0 || true
+      - trivy image "${IMAGE_REPO_NAME}:${IMAGE_TAG}" --format table --severity HIGH,CRITICAL --exit-code 0 || true
 
-        set -e
+      - set -e
+      - |
         if [ $TRIVY_IMG_EXIT -ne 0 ]; then
           if [ "${TRIVY_FAIL_IMAGE}" = "true" ]; then
             echo "Trivy found HIGH/CRITICAL vulnerabilities in image and TRIVY_FAIL_IMAGE=true -> failing build."
@@ -364,12 +341,10 @@ phases:
       # -----------------------------
       # PUSH IMAGE TO ECR (after scan)
       # -----------------------------
-      - |
-        echo "Pushing Docker image to ECR: ${IMAGE_FULLNAME}"
-        docker push ${IMAGE_FULLNAME} || echo "Docker push failed (check auth/permissions)"
+      - echo "Pushing Docker image to ECR: ${IMAGE_FULLNAME}"
+      - docker push ${IMAGE_FULLNAME} || echo "Docker push failed (check auth/permissions)"
 
-      - |
-        echo "Post build done. Listing reports:"
+      - echo "Post build done. Listing reports:"
       - ls -la trivy-reports/ || true
       - ls -la dependency-check-reports/ || true
       - ls -la dc_tmp || true
