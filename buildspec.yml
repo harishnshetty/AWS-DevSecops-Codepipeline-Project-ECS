@@ -23,7 +23,7 @@ env:
     DEP_CHECK_FAIL_CVSS: ""
 
     # If true, Trivy image scan will return non-zero exit code when HIGH/CRITICAL findings exist.
-    TRIVY_FAIL_IMAGE: "false"
+    TRIVY_FAIL_IMAGE: "true"
 
     # -------------------------
     # EFS (NFS) Configuration for Dependency-Check NVD DB / Reports
