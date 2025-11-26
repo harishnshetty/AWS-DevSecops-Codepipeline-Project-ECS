@@ -25,9 +25,18 @@ env:
     # If true, Trivy image scan will return non-zero exit code when HIGH/CRITICAL findings exist.
     TRIVY_FAIL_IMAGE: "false"
 
-    # S3 Cache Configuration
-    NVD_CACHE_BUCKET: "your-dependency-check-cache-bucket"  # Change this to your bucket name
-    NVD_CACHE_PATH: "nvd-cache"
+    # -------------------------
+    # EFS (NFS) Configuration for Dependency-Check NVD DB / Reports
+    # Change EFS_MOUNT_TARGET to your EFS DNS (keep :/ at the end)
+    # -------------------------
+    EFS_MOUNT_TARGET: "fs-097e79d76bbfca2a3.efs.ap-south-1.amazonaws.com:/"
+    EFS_MOUNT_DIR: "/efs"
+    DP_CHECK_DATA_DIR: "/efs/dependency-check-data"
+    DP_CHECK_REPORT_DIR: "/efs/dependency-check-reports"
+    # mount options (tune as needed)
+    EFS_MOUNT_OPTIONS: "nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport"
+    # Set to "true" to mount EFS and run Dependency-Check; set "false" to skip mount & DP check
+    RUN_DP_CHECK: "true"
 
 phases:
   install:
@@ -43,33 +52,47 @@ phases:
       - |
         if command -v apt-get >/dev/null 2>&1; then
           apt-get update -y
-          apt-get install -y jq curl unzip wget default-jre docker.io fuse s3fs
+          apt-get install -y jq curl unzip wget default-jre docker.io fuse nfs-common || true
         elif command -v yum >/dev/null 2>&1; then
-          yum install -y jq curl unzip wget java-11-openjdk docker fuse s3fs
+          yum install -y jq curl unzip wget java-11-openjdk docker fuse nfs-utils || true
         else
-          echo "Ensure Java, unzip, curl, wget, docker, fuse, s3fs installed"
+          echo "Ensure Java, unzip, curl, wget, docker, fuse, nfs client installed"
         fi
       - echo "Ensure Docker daemon is available (if running docker inside build):"
       - docker --version || true
 
       # -----------------------------
-      # SETUP S3FS - MOUNT S3 BUCKET AS LOCAL FILESYSTEM
+      # SETUP EFS - MOUNT NFS EFS FOR NVD CACHE
       # -----------------------------
       - |
-        echo "Setting up S3FS to mount S3 bucket for NVD cache..."
-        S3_MOUNT_DIR="$HOME/.dependency-check"
-        mkdir -p "$S3_MOUNT_DIR"
-        
-        # Mount S3 bucket using IAM role credentials
-        s3fs "$NVD_CACHE_BUCKET" "$S3_MOUNT_DIR" -o use_cache=/tmp/s3fs_cache -o umask=0007,uid=$(id -u),gid=$(id -g) -o iam_role=auto
-        
-        # Verify mount was successful
-        if mountpoint -q "$S3_MOUNT_DIR"; then
-          echo "✅ Successfully mounted S3 bucket $NVD_CACHE_BUCKET to $S3_MOUNT_DIR"
-          ls -la "$S3_MOUNT_DIR/" || echo "Bucket is empty (first time setup)"
+        echo "Preparing EFS mount for Dependency-Check (RUN_DP_CHECK=$RUN_DP_CHECK)..."
+        if [ "$RUN_DP_CHECK" = "true" ]; then
+          echo "Creating mount directories..."
+          mkdir -p "$EFS_MOUNT_DIR"
+          mkdir -p "$DP_CHECK_DATA_DIR" "$DP_CHECK_REPORT_DIR" || true
+
+          # Try mounting with retries
+          MAX_RETRIES=3
+          COUNT=0
+          MOUNT_SUCCESS=0
+          while [ $COUNT -lt $MAX_RETRIES ]; do
+            echo "Mount attempt $((COUNT+1)): ${EFS_MOUNT_TARGET} -> ${EFS_MOUNT_DIR}"
+            mount -t nfs4 -o ${EFS_MOUNT_OPTIONS} "${EFS_MOUNT_TARGET}" "${EFS_MOUNT_DIR}" && { MOUNT_SUCCESS=1; break; }
+            COUNT=$((COUNT+1))
+            echo "Mount failed, sleeping 5s..."
+            sleep 5
+          done
+
+          if [ "$MOUNT_SUCCESS" -ne 1 ]; then
+            echo "ERROR: Failed to mount EFS ${EFS_MOUNT_TARGET} after ${MAX_RETRIES} tries"
+            # Fail early so you can debug networking/SG/VPC issues. If you prefer non-fatal, change to 'echo' instead of 'exit 1'.
+            exit 1
+          fi
+
+          echo "EFS mounted at ${EFS_MOUNT_DIR}"
+          chmod -R 0775 "$EFS_MOUNT_DIR" || true
         else
-          echo "❌ Failed to mount S3 bucket - falling back to local cache"
-          mkdir -p "$S3_MOUNT_DIR/data"
+          echo "RUN_DP_CHECK != true — skipping EFS mount and Dependency-Check setup."
         fi
 
       # -----------------------------
@@ -108,7 +131,7 @@ phases:
           chmod +x "${DCPATH}/bin/dependency-check.sh" || true
         else
           # Fallback: try to find any directory that might contain the binary
-          DCPATH=$(find dc_tmp -name "dependency-check.sh" -type f | head -n1 | xargs dirname | xargs dirname)
+          DCPATH=$(find dc_tmp -name "dependency-check.sh" -type f | head -n1 | xargs dirname | xargs dirname || true)
           if [ -n "$DCPATH" ] && [ -f "${DCPATH}/bin/dependency-check.sh" ]; then
             echo "Found dependency-check via fallback at: $DCPATH"
             chmod +x "${DCPATH}/bin/dependency-check.sh" || true
@@ -140,31 +163,40 @@ phases:
       - npm install --legacy-peer-deps || npm install
 
       # -----------------------------
-      # OWASP DEPENDENCY CHECK WITH S3 MOUNT
+      # OWASP DEPENDENCY CHECK WITH EFS NVD CACHE
       # -----------------------------
       - |
         if [ -n "$DCPATH" ] && [ -x "${DCPATH}/bin/dependency-check.sh" ]; then
-          echo "Running Dependency-Check SCA with S3-mounted NVD cache..."
-          
-          # Check if S3 mount is working and has data
-          S3_MOUNT_DIR="$HOME/.dependency-check"
-          if mountpoint -q "$S3_MOUNT_DIR" && [ -f "$S3_MOUNT_DIR/nvdcve-1.1-modified.meta" ]; then
-            echo "✅ Using S3-mounted NVD cache"
-            # Check cache freshness
-            CACHE_AGE=$(find "$S3_MOUNT_DIR/nvdcve-1.1-modified.meta" -mtime +0 -print)
-            if [ -z "$CACHE_AGE" ]; then
-              echo "NVD cache is fresh (less than 24 hours old) - disabling auto-update"
+          echo "Running Dependency-Check SCA with EFS-mounted NVD cache..."
+
+          # Ensure EFS is mounted and data dir present
+          if [ "$RUN_DP_CHECK" = "true" ]; then
+            if mountpoint -q "$EFS_MOUNT_DIR"; then
+              echo "✅ EFS is mounted at $EFS_MOUNT_DIR"
+            else
+              echo "ERROR: EFS not mounted at $EFS_MOUNT_DIR — aborting Dependency-Check"
+              exit 1
+            fi
+          fi
+
+          # If there's an existing NVD cache file, prefer it to determine update behavior
+          if [ -f "${DP_CHECK_DATA_DIR}/nvdcve-1.1-modified.meta" ]; then
+            echo "Found NVD cache metadata in EFS: ${DP_CHECK_DATA_DIR}/nvdcve-1.1-modified.meta"
+            # Check age - if recent, disable update to save bandwidth
+            CACHE_AGE_DAYS=$(find "${DP_CHECK_DATA_DIR}/nvdcve-1.1-modified.meta" -mtime +0 -print || true)
+            if [ -z "$CACHE_AGE_DAYS" ]; then
+              echo "NVD cache appears fresh (<24h) - will pass --noupdate"
               NO_UPDATE_ARG="--noupdate"
             else
-              echo "NVD cache needs update - will download latest data to S3"
+              echo "NVD cache older than 24h - will allow update"
               NO_UPDATE_ARG=""
             fi
           else
-            echo "ℹ️ No existing NVD cache in S3 - will create initial cache"
+            echo "No NVD cache found in EFS - will download initial data into EFS"
             NO_UPDATE_ARG=""
           fi
 
-          DC_ARGS="--project ${IMAGE_REPO_NAME} --scan . --out dependency-check-reports --format ALL --data $S3_MOUNT_DIR $NO_UPDATE_ARG"
+          DC_ARGS="--project ${IMAGE_REPO_NAME} --scan . --out ${DP_CHECK_REPORT_DIR} --format ALL --data ${DP_CHECK_DATA_DIR} ${NO_UPDATE_ARG}"
 
           # Add fail on CVSS if specified
           if [ -n "$DEP_CHECK_FAIL_CVSS" ]; then
@@ -182,7 +214,7 @@ phases:
               echo "Failing build due to Dependency-Check CVSS threshold"
               exit $DC_EXIT
             else
-              echo "Dependency-Check finished with non-zero exit code ($DC_EXIT) — continuing (report saved under dependency-check-reports/)"
+              echo "Dependency-Check finished with non-zero exit code ($DC_EXIT) — continuing (report saved under ${DP_CHECK_REPORT_DIR}/)"
             fi
           else
             echo "Dependency-Check completed successfully."
@@ -244,14 +276,17 @@ phases:
         echo "Post-build: run image scan before push"
 
       # -----------------------------
-      # CLEANUP S3 MOUNT
+      # CLEANUP EFS MOUNT
       # -----------------------------
       - |
-        echo "Unmounting S3 filesystem..."
-        S3_MOUNT_DIR="$HOME/.dependency-check"
-        if mountpoint -q "$S3_MOUNT_DIR"; then
-          fusermount -u "$S3_MOUNT_DIR" || umount "$S3_MOUNT_DIR" || true
-          echo "S3 filesystem unmounted"
+        echo "Cleaning up EFS mount (if any)..."
+        if [ "$RUN_DP_CHECK" = "true" ]; then
+          if mountpoint -q "$EFS_MOUNT_DIR"; then
+            umount "$EFS_MOUNT_DIR" || { echo "Regular umount failed; trying lazy unmount"; umount -l "$EFS_MOUNT_DIR" || true; }
+            echo "EFS unmounted from $EFS_MOUNT_DIR"
+          else
+            echo "No EFS mount found at $EFS_MOUNT_DIR"
+          fi
         fi
 
       # -----------------------------
