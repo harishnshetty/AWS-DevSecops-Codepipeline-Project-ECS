@@ -165,7 +165,7 @@ phases:
           fi
 
           # Reports now go to LOCAL directory for artifacts
-          DC_ARGS="--project ${IMAGE_REPO_NAME} --scan . --out ${DP_CHECK_REPORT_DIR} --format ALL --data ${DP_CHECK_DATA_DIR} ${NO_UPDATE_ARG}"
+          DC_ARGS="--project ${IMAGE_REPO_NAME} --scan . --out ${DP_CHECK_REPORT_DIR} --format JSON --data ${DP_CHECK_DATA_DIR} ${NO_UPDATE_ARG}"
           if [ -n "$DEP_CHECK_FAIL_CVSS" ]; then
             DC_ARGS="$DC_ARGS --failOnCVSS $DEP_CHECK_FAIL_CVSS"
           fi
