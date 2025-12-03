@@ -18,11 +18,14 @@ env:
     DEP_CHECK_FAIL_CVSS: ""
     TRIVY_FAIL_IMAGE: "false"
 
-    # EFS
-    EFS_MOUNT_TARGET: "fs-0302eaad30e6c4f93.efs.ap-south-1.amazonaws.com:/" 
+    # EFS (used only for Dependency-Check DATA cache)
+    EFS_MOUNT_TARGET: "fs-0302eaad30e6c4f93.efs.ap-south-1.amazonaws.com:/"
     EFS_MOUNT_DIR: "/efs"
     DP_CHECK_DATA_DIR: "/efs/dependency-check-data"
-    DP_CHECK_REPORT_DIR: "/efs/dependency-check-reports"
+
+    # IMPORTANT: reports are now LOCAL for artifacts (not on EFS)
+    DP_CHECK_REPORT_DIR: "dependency-check-reports"
+
     EFS_MOUNT_OPTIONS: "nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport"
 
     RUN_DP_CHECK: "true"
@@ -53,8 +56,13 @@ phases:
         fi
       - echo "Docker availability:"
       - docker --version || true
-      - mkdir dependency-check-reports trivy-reports || true
-      - mkdir -p "$EFS_MOUNT_DIR" "$DP_CHECK_DATA_DIR" "$DP_CHECK_REPORT_DIR" || true
+
+      # Local report dirs (for artifacts)
+      - mkdir -p dependency-check-reports trivy-reports || true
+
+      # EFS directories (only for DATA cache)
+      - mkdir -p "$EFS_MOUNT_DIR" "$DP_CHECK_DATA_DIR" || true
+
       - |
         # EFS check & optional fallback manual mount
         echo "Checking EFS mountpoint: $EFS_MOUNT_DIR"
@@ -115,7 +123,7 @@ phases:
       - sonar-scanner --version || true
 
       - echo "Downloading Dependency-Check CLI..."
-      - mkdir -p dependency-check-reports dc_tmp || true
+      - mkdir -p dc_tmp || true
       - wget -q "$DEP_CHECK_URL" -O depcheck.zip || curl -sSL "$DEP_CHECK_URL" -o depcheck.zip || true
       - unzip -q depcheck.zip -d dc_tmp || true
       - |
@@ -156,6 +164,7 @@ phases:
             fi
           fi
 
+          # Reports now go to LOCAL directory for artifacts
           DC_ARGS="--project ${IMAGE_REPO_NAME} --scan . --out ${DP_CHECK_REPORT_DIR} --format ALL --data ${DP_CHECK_DATA_DIR} ${NO_UPDATE_ARG}"
           if [ -n "$DEP_CHECK_FAIL_CVSS" ]; then
             DC_ARGS="$DC_ARGS --failOnCVSS $DEP_CHECK_FAIL_CVSS"
@@ -251,7 +260,6 @@ phases:
         echo "Starting Trivy image scan for local image: ${IMAGE_REPO_NAME}:${IMAGE_TAG}"
         set +e
         TRIVY_EXIT_CODE_FLAG="--exit-code 0"
-        # Proper multi-line if with fi
         if [ "${TRIVY_FAIL_IMAGE}" = "true" ]; then
           TRIVY_EXIT_CODE_FLAG="--exit-code 1"
           echo "TRIVY_FAIL_IMAGE is true -> build will fail if HIGH/CRITICAL findings are present."
