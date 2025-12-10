@@ -130,11 +130,6 @@ phases:
 
       - echo "Build phase completed"
 
-      # Upload reports to S3 using CodePipeline execution ID
-      - echo "===== Uploading reports to S3 ====="
-      - echo "Pipeline execution: ${PIPELINE_EXECUTION_ID}"
-      - aws s3 cp "${REPORT_DIR}/" "s3://zomato-report/${PIPELINE_EXECUTION_ID}/" --recursive
-
 artifacts:
   files:
     - "**/*"

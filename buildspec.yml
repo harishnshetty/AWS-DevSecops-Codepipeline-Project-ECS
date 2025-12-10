@@ -190,25 +190,7 @@ phases:
           echo "Skipping Dependency-Check."
         fi
 
-      # - echo "Running SonarScanner..."
-      # - |
-      #   sonar-scanner \
-      #     -Dsonar.login="$LOGIN" \
-      #     -Dsonar.host.url="$HOST" \
-      #     -Dsonar.projectKey="$Project" \
-      #     -Dsonar.organization="$Organization" \
-      #     2>&1 | tee sonar-output.txt || true
-
-      # - sleep 10
-      # - curl -s "https://sonarcloud.io/api/qualitygates/project_status?projectKey=$Project" > result.json || true
-
-      # - |
-      #   if [ -f result.json ] && [ "$(jq -r '.projectStatus.status' result.json 2>/dev/null)" = "ERROR" ]; then
-      #     echo "Sonar Quality Gate FAILED"
-      #     exit 1
-      #   else
-      #     echo "Sonar Quality Gate passed or not present"
-      #   fi
+      # Sonar section commented out
 
       - AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
       - |
@@ -282,15 +264,14 @@ phases:
 
       - |
         echo "Rename/disable large dependency-check output files so they are not published as artifacts (dependency-check-jenkins.html, *.xml)"
-        # Rename html/xml outputs if present (acts like commenting them out)
         if [ -d "${DP_CHECK_REPORT_DIR}" ]; then
           find "${DP_CHECK_REPORT_DIR}" -maxdepth 1 -type f -name "dependency-check-jenkins.html" -exec mv {} {}.disabled \; || true
           find "${DP_CHECK_REPORT_DIR}" -maxdepth 1 -type f -name "*.xml" -exec mv {} {}.disabled \; || true
         fi
-        # Also check dc_tmp (local unzip dir)
         find dc_tmp -type f -name "dependency-check-jenkins.html" -exec mv {} {}.disabled \; || true
         find dc_tmp -type f -name "*.xml" -exec mv {} {}.disabled \; || true
         echo "Large dependency-check files renamed (if present)."
+
       - |
         echo "Creating imagedefinitions.json for ECS deployment..."
         cat > imagedefinitions.json <<EOF
@@ -304,7 +285,6 @@ phases:
         EOF
         cat imagedefinitions.json
 
-        
       - |
         echo "Pushing Docker image to ECR: ${IMAGE_FULLNAME}"
         docker push ${IMAGE_FULLNAME} || echo "Docker push failed (check auth/permissions)"
@@ -314,6 +294,12 @@ phases:
       - ls -la dependency-check-reports/ || true
       - ls -la dc_tmp || true
 
+      # 🔹 Upload reports (and imagedefinitions) to S3 using CodePipeline execution ID
+      - echo "===== Uploading security reports to S3 ====="
+      - echo "Pipeline execution: ${PIPELINE_EXECUTION_ID}"
+      - aws s3 cp trivy-reports/ "s3://zomato-report/${PIPELINE_EXECUTION_ID}/trivy-reports/" --recursive
+      - aws s3 cp dependency-check-reports/ "s3://zomato-report/${PIPELINE_EXECUTION_ID}/dependency-check-reports/" --recursive
+      - aws s3 cp imagedefinitions.json "s3://zomato-report/${PIPELINE_EXECUTION_ID}/imagedefinitions.json"
 
 artifacts:
   files:
