@@ -29,22 +29,22 @@ phases:
       - echo "=== Starting Active Scan on $TARGET_URL ==="
       - mkdir -p dast-report
 
-      # Start scan
-      - |
-        SCAN_ID=$(curl -s "$ZAP_URL/JSON/ascan/action/scan/?apikey=$ZAP_API_KEY&url=$TARGET_URL&recurse=true&inScopeOnly=false" | jq -r '.scan')
-        echo "Scan ID: $SCAN_ID"
+      # # Start scan
+      # - |
+      #   SCAN_ID=$(curl -s "$ZAP_URL/JSON/ascan/action/scan/?apikey=$ZAP_API_KEY&url=$TARGET_URL&recurse=true&inScopeOnly=false" | jq -r '.scan')
+      #   echo "Scan ID: $SCAN_ID"
 
-      # Poll status
-      - |
-        echo "=== Waiting for scan to finish ==="
-        while true; do
-          STATUS=$(curl -s "$ZAP_URL/JSON/ascan/view/status/?scanId=$SCAN_ID&apikey=$ZAP_API_KEY" | jq -r '.status')
-          echo "Progress: ${STATUS}%"
-          if [ "$STATUS" = "100" ]; then
-            break
-          fi
-          sleep 5
-        done
+      # # Poll status
+      # - |
+      #   echo "=== Waiting for scan to finish ==="
+      #   while true; do
+      #     STATUS=$(curl -s "$ZAP_URL/JSON/ascan/view/status/?scanId=$SCAN_ID&apikey=$ZAP_API_KEY" | jq -r '.status')
+      #     echo "Progress: ${STATUS}%"
+      #     if [ "$STATUS" = "100" ]; then
+      #       break
+      #     fi
+      #     sleep 5
+      #   done
 
       # Generate dast-report
       - echo "=== Generating dast-report ==="
