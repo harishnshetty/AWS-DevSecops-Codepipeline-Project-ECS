@@ -46,9 +46,9 @@ phases:
       ###########################################################
       - high_alerts=$(curl -s "$OwaspZapURL/JSON/alert/view/alertsSummary/?apikey=$OwaspZapApiKey&baseurl=$ApplicationURL" | jq -r '.alertsSummary.High // 0')
       - medium_alerts=$(curl -s "$OwaspZapURL/JSON/alert/view/alertsSummary/?apikey=$OwaspZapApiKey&baseurl=$ApplicationURL" | jq -r '.alertsSummary.Medium // 0')
-        |
-      - echo "High Alerts: $high_alerts"
-      - echo "Medium Alerts: $medium_alerts"
+      - |
+        echo "High Alerts: $high_alerts"
+        echo "Medium Alerts: $medium_alerts"
 
   build:
     commands:
