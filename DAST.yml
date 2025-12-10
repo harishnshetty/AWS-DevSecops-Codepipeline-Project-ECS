@@ -26,7 +26,8 @@ phases:
       # ACTIVE SCAN
       ###########################################################
       - scanid=$(curl -s "$OwaspZapURL/JSON/ascan/action/scan/?apikey=$OwaspZapApiKey&url=$ENCODED_URL&recurse=true&inScopeOnly=false" | jq -r '.scan')
-      - echo "Active Scan ID: $scanid"
+      - |
+        echo "Active Scan ID: $scanid"
 
       ###########################################################
       # ACTIVE SCAN PROGRESS LOOP
