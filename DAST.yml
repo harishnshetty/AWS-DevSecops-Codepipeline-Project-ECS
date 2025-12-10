@@ -178,7 +178,8 @@ phases:
       
       - |
         echo "Running ZAP Baseline scan against ${TARGET_URL}"
-      - echo "Using script: ${BASELINE_SCRIPT}"
+      - |
+        echo "Using script: ${BASELINE_SCRIPT}"
       
       - |
         # Run ZAP baseline scan
