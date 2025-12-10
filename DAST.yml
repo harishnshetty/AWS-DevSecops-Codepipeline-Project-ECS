@@ -29,9 +29,14 @@ phases:
       - echo "=== Checking ZAP is up ==="
       - curl -s "$ZAP_URL/JSON/core/view/version/?apikey=$ZAP_API_KEY"
 
+      # === NEW STABILITY FIX ===
+      - echo "=== Waiting 15 seconds for ZAP initialization ==="
+      - sleep 15 
+      # =========================
+
       - echo "=== Preparing ZAP environment for HTTPS scan ==="
       
-      # 1. Clear any previous session data for a clean scan
+      # 1. Clear any previous session data for a clean scan (was failing here)
       - curl -s "$ZAP_URL/JSON/core/action/newSession/?apikey=$ZAP_API_KEY"
 
       # 2. CRITICAL FIX FOR HTTPS: Instruct ZAP to ignore certificate validation errors for the target.
