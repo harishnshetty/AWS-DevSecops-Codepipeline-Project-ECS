@@ -11,6 +11,8 @@ env:
 phases:
   install:
     commands:
+      # For Ubuntu-based CodeBuild images
+      - apt-get update -y
       - apt-get install -y jq curl
 
   build:
@@ -29,36 +31,50 @@ phases:
         cat /tmp/zap_newsession.json || true
 
         echo "=== 2) Spider ==="
-        SPIDER_ID=$(curl -s "$ZAP_URL/JSON/spider/action/scan/?apikey=$API_KEY&url=$TARGET&recurse=true" | jq -r '.scan')
+        SPIDER_JSON=$(curl -s "$ZAP_URL/JSON/spider/action/scan/?apikey=$API_KEY&url=$TARGET&recurse=true")
+        echo "Spider response: $SPIDER_JSON"
+        SPIDER_ID=$(echo "$SPIDER_JSON" | jq -r '.scan')
         echo "Spider id: $SPIDER_ID"
 
-        while true; do
-          STATUS=$(curl -s "$ZAP_URL/JSON/spider/view/status/?apikey=$API_KEY&scanId=$SPIDER_ID" | jq -r '.status')
-          echo "Spider progress: $STATUS%"
-          if [ "$STATUS" -ge 100 ]; then
-            break
-          fi
-          sleep 5
-        done
+        if [ "$SPIDER_ID" = "null" ] || [ -z "$SPIDER_ID" ]; then
+          echo "❗ Spider scan did not start correctly (scan id is null/empty)."
+        else
+          while true; do
+            STATUS=$(curl -s "$ZAP_URL/JSON/spider/view/status/?apikey=$API_KEY&scanId=$SPIDER_ID" | jq -r '.status')
+            echo "Spider progress: $STATUS%"
+            if [ "$STATUS" != "null" ] && [ "$STATUS" -ge 100 ]; then
+              break
+            fi
+            sleep 5
+          done
 
-        echo "Spider done, sleeping 5s..."
-        sleep 5
+          echo "Spider done, sleeping 5s..."
+          sleep 5
+        fi
 
         echo "=== 3) Active Scan ==="
-        SCAN_ID=$(curl -s "$ZAP_URL/JSON/ascan/action/scan/?apikey=$API_KEY&url=$TARGET&recurse=true&inScopeOnly=false" | jq -r '.scan')
+        ASCAN_JSON=$(curl -s "$ZAP_URL/JSON/ascan/action/scan/?apikey=$API_KEY&url=$TARGET&recurse=true&inScopeOnly=false")
+        echo "Active scan response: $ASCAN_JSON"
+        SCAN_ID=$(echo "$ASCAN_JSON" | jq -r '.scan')
         echo "Scan id: $SCAN_ID"
 
-        while true; do
-          STATUS=$(curl -s "$ZAP_URL/JSON/ascan/view/status/?apikey=$API_KEY&scanId=$SCAN_ID" | jq -r '.status')
-          echo "Active scan progress: $STATUS%"
-          if [ "$STATUS" -ge 100 ]; then
-            break
-          fi
-          sleep 10
-        done
+        if [ "$SCAN_ID" = "null" ] || [ -z "$SCAN_ID" ]; then
+          echo "❗ Active scan did not start properly (scan id is null/empty). Skipping active scan loop."
+        else
+          while true; do
+            STATUS=$(curl -s "$ZAP_URL/JSON/ascan/view/status/?apikey=$API_KEY&scanId=$SCAN_ID" | jq -r '.status')
+            echo "Active scan progress: $STATUS%"
+            if [ "$STATUS" != "null" ] && [ "$STATUS" -ge 100 ]; then
+              break
+            fi
+            sleep 10
+          done
+        fi
 
         echo "=== 4) Reports ==="
+        curl -s "$ZAP_URL/OTHER/core/other/htmlreport/?apikey=$_API_KEY" > zap_report.html || \
         curl -s "$ZAP_URL/OTHER/core/other/htmlreport/?apikey=$API_KEY" > zap_report.html
+
         curl -s "$ZAP_URL/JSON/core/view/alerts/?apikey=$API_KEY&baseurl=$TARGET" > zap_report.json
 
 artifacts:
