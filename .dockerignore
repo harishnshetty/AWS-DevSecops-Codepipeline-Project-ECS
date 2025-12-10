@@ -16,3 +16,4 @@ zap.yml
 trivy-reports/**
 dependency-check-reports/**
 imagedefinitions.json
+DAST.yml
