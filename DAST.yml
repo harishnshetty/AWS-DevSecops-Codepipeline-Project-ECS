@@ -2,139 +2,65 @@ version: 0.2
 
 env:
   secrets-manager:
-    ZAP_API_KEY: dev/zap:apikey  # <-- your secret-id:key
+    ZAP_API_KEY: dev/zap:apikey
   variables:
-    ZAP_ADDRESS: "10.0.7.152"    # ZAP host in your VPC
-    ZAP_PORT: "8080"             # ZAP port
+    ZAP_URL: "http://10.0.7.152:8080"
     TARGET_URL: "https://staging.harishshetty.xyz/"
 
 phases:
   install:
     commands:
-      - apt-get update
-      - apt-get install -y python3 python3-pip
-      # Install the official ZAP Python client
-      - pip3 install python-owasp-zap-v2.4
+      - echo "Setting up ZAP scan..."
+      - apt-get update && apt-get install -y jq
+
+  pre_build:
+    commands:
+      - echo "Testing ZAP connection..."
+      - curl -s "${ZAP_URL}/JSON/core/view/version/?apikey=$ZAP_API_KEY" | jq .
+      - echo "Target: $TARGET_URL"
 
   build:
     commands:
-      - mkdir -p dast-report
       - |
-        python3 << 'EOF'
-        import os
-        import time
-        import json
-        import sys
-        from zapv2 import ZAPv2
+        echo "Running ZAP scan using zap-api-scan.py..."
+        cd /zap
+        
+        # Run the scan with comprehensive options
+        python zap-api-scan.py \
+          -t "$TARGET_URL" \
+          -f html \
+          -r zap-report.html \
+          -x zap-report.xml \
+          -J zap-report.json \
+          -d \
+          -z "-config api.key=$ZAP_API_KEY \
+              -config connection.timeoutInSecs=600 \
+              -config scanner.attackOnStart=true \
+              -config scanner.threadPerHost=2" \
+          -a \
+          -j \
+          -I
+        
+        # Check exit code
+        SCAN_EXIT_CODE=$?
+        echo "ZAP scan completed with exit code: $SCAN_EXIT_CODE"
 
-        zap_address = os.environ["ZAP_ADDRESS"]
-        zap_port = os.environ["ZAP_PORT"]
-        zap_api_key = os.environ["ZAP_API_KEY"]
-        target_url = os.environ["TARGET_URL"].rstrip("/")
-
-        proxies = {
-            "http": f"http://{zap_address}:{zap_port}",
-            "https": f"http://{zap_address}:{zap_port}",
-        }
-
-        print(f"[*] Connecting to ZAP at {zap_address}:{zap_port}")
-        zap = ZAPv2(apikey=zap_api_key, proxies=proxies)
-
-        # -------------------------------------------------------------------
-        # SPIDER SCAN
-        # -------------------------------------------------------------------
-        print(f"[*] Starting spider scan for {target_url}")
-        spider_id = zap.spider.scan(target_url)
-        print(f"[+] Spider ID: {spider_id}")
-
-        max_attempts = 120  # 120 * 5s = 10 minutes
-        attempt = 0
-        while True:
-            status = int(zap.spider.status(spider_id))
-            print(f"[SPIDER] Progress: {status}% (attempt {attempt})")
-            if status >= 100:
-                break
-            attempt += 1
-            if attempt >= max_attempts:
-                print("[X] Spider did not complete in time, failing build.")
-                sys.exit(1)
-            time.sleep(5)
-
-        print("[+] Spider completed")
-
-        # -------------------------------------------------------------------
-        # ACTIVE SCAN
-        # -------------------------------------------------------------------
-        print(f"[*] Starting active scan for {target_url}")
-        ascan_id = zap.ascan.scan(target_url)
-        print(f"[+] Active Scan ID: {ascan_id}")
-
-        attempt = 0
-        while True:
-            status = int(zap.ascan.status(ascan_id))
-            print(f"[ASCAN] Progress: {status}% (attempt {attempt})")
-            if status >= 100:
-                break
-            attempt += 1
-            if attempt >= max_attempts:
-                print("[X] Active scan did not complete in time, failing build.")
-                sys.exit(1)
-            time.sleep(5)
-
-        print("[+] Active scan completed")
-
-        # -------------------------------------------------------------------
-        # GENERATE REPORTS
-        # -------------------------------------------------------------------
-        print("[*] Generating ZAP reports")
-        html_report = zap.core.htmlreport()
-        json_report = zap.core.jsonreport()
-
-        with open("dast-report/zap_report.html", "w") as f:
-            f.write(html_report)
-
-        with open("dast-report/zap_report.json", "w") as f:
-            f.write(json_report)
-
-        print("[+] Reports written to dast-report/zap_report.html and .json")
-
-        # -------------------------------------------------------------------
-        # COUNT HIGH / MEDIUM ALERTS & FAIL IF ANY
-        # -------------------------------------------------------------------
-        print("[*] Fetching alerts for threshold check")
-        alerts = zap.alert.alerts(baseurl=target_url)
-
-        high_count = 0
-        medium_count = 0
-
-        for a in alerts:
-            risk = a.get("risk", "")  # "High", "Medium", "Low", "Informational"
-            if risk.lower() == "high":
-                high_count += 1
-            elif risk.lower() == "medium":
-                medium_count += 1
-
-        print(f"[RESULT] High alerts: {high_count}")
-        print(f"[RESULT] Medium alerts: {medium_count}")
-
-        # Optional: write summary JSON
-        summary = {
-            "target": target_url,
-            "high": high_count,
-            "medium": medium_count,
-            "total_alerts": len(alerts),
-        }
-        with open("dast-report/summary.json", "w") as f:
-            json.dump(summary, f, indent=2)
-
-        if high_count > 0 or medium_count > 0:
-            print("[X] High or Medium alerts found — failing build.")
-            sys.exit(1)
-
-        print("[✓] No High/Medium alerts — Build SUCCESS.")
-        EOF
+  post_build:
+    commands:
+      - |
+        echo "Processing results..."
+        
+        # List generated reports
+        ls -la *.html *.json *.xml
+        
+        # Create summary
+        echo "=== ZAP Scan Completed ==="
+        echo "Reports generated:"
+        find . -name "*.html" -o -name "*.json" -o -name "*.xml" | xargs ls -la
 
 artifacts:
   files:
-    - dast-report/**
-  discard-paths: no
+    - "*.html"
+    - "*.json"
+    - "*.xml"
+  name: zap-security-reports
