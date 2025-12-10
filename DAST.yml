@@ -4,7 +4,7 @@ env:
   variables:
     # ZAP download details
     ZAP_VERSION: "2.16.1"
-    ZAP_PROXY_URL: "https://github.com/zaproxy/zaproxy/releases/download/v2.16.1/ZAP_2.16.1_Linux.tar.gz"
+    ZAP_PROXY_URL: "https://github.com/zaproxy/zaproxy/releases/download/v2.16.1/ZAP_2_16_1_unix.sh"
 
     # EFS (used for ZAP install + data cache)
     EFS_MOUNT_TARGET: "fs-0e6533aeea50371ed.efs.ap-south-1.amazonaws.com:/"
@@ -16,7 +16,7 @@ env:
     FAIL_ON_EFS_MOUNT: "false"
     FALLBACK_MANUAL_MOUNT: "false"
     MANUAL_MOUNT_MAX_RETRIES: "6"
-    
+
 phases:
   install:
     commands:
@@ -89,6 +89,7 @@ phases:
 
       - |
         echo "===== Preparing ZAP on EFS ====="
+        chmod +x ZAP_2_16_1_unix.sh || true
         ZAP_TAR_NAME="ZAP_${ZAP_VERSION}_Linux.tar.gz"
         ZAP_TAR_PATH="${ZAP_SCAN_DATA_DIR}/${ZAP_TAR_NAME}"
         ZAP_INSTALL_DIR="${ZAP_SCAN_DATA_DIR}/ZAP_${ZAP_VERSION}"
