@@ -17,7 +17,8 @@ phases:
     commands:
       - echo "Testing ZAP connection..."
       - curl -s "${ZAP_URL}/JSON/core/view/version/?apikey=$ZAP_API_KEY" | jq .
-      - echo "Target: $TARGET_URL"
+      - |
+        echo "Target: $TARGET_URL"
 
   build:
     commands:
