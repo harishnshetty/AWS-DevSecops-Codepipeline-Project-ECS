@@ -24,17 +24,16 @@ phases:
           apt-get install -y jq curl
         fi
 
-  pre_build:
+pre_build:
     commands:
       - echo "=== Checking ZAP is up ==="
       - curl -s "$ZAP_URL/JSON/core/view/version/?apikey=$ZAP_API_KEY"
 
       - echo "=== Preparing ZAP environment for HTTPS scan ==="
-      
       # 1. Clear any previous session data for a clean scan
       - curl -s "$ZAP_URL/JSON/core/action/newSession/?apikey=$ZAP_API_KEY"
 
-      # 2. CRITICAL FIX FOR HTTPS: Instruct ZAP to ignore certificate validation errors for the target.
+      # 2. **CRITICAL FIX FOR HTTPS** - Instruct ZAP to ignore certificate validation errors for the target.
       - >
         curl -s "$ZAP_URL/JSON/core/action/setOptionAcceptUntrustedSslCertificates/?apikey=$ZAP_API_KEY&Boolean=true"
 
