@@ -59,9 +59,7 @@ phases:
         echo "Reports generated:"
         find . -name "*.html" -o -name "*.json" -o -name "*.xml" | xargs ls -la
 
-artifacts:
+  artifacts:
   files:
-    - "*.html"
-    - "*.json"
-    - "*.xml"
-  name: zap-security-reports
+    - dast-report/**
+  discard-paths: no
