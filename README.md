@@ -32,7 +32,7 @@ For any additional help, please contact me from [here](https://www.learnandshare
 
 - Settings -> Developer Settings -> Personal Access Token -> Tokens (Classic)
 - Note: aws-desecops-cicd
-- Save the Token: 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
+- Save the Token: xsdfjk
 
 ## Step 2: Create the https://sonarqube.io/ account and create a new project
 
@@ -81,7 +81,7 @@ For any additional help, please contact me from [here](https://www.learnandshare
 - update the Sonar Token  in Secret Manager
 
 Secret key      | Secret value
-sonartoken      | 6286980a5d33dd39eea7bdf352a495859c02ee7f
+sonartoken      | sfdf4654
 HOST            | https://sonarcloud.io/
 Organization    | harishnshetty
 Project         | sonarcloud-aws-cp
