@@ -135,11 +135,11 @@ Project         | sonarcloud-aws-cp
 - Create the ACM
 - Create the Route 53 record
 
-### code pipeline
+### code pipeline 
 - connect the github connection app
 - build stage --> select the Other build providers
 - Environment variables [PIPELINE_EXECUTION_ID] [#{codepipeline.PipelineExecutionId}]
-- 
+- Staging deploy --> imagedefinitions.json
 
 
 ## What Need to be Delete
