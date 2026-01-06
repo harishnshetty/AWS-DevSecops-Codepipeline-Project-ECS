@@ -129,10 +129,18 @@ Project         | sonarcloud-aws-cp
 ### go-to the ALB
 - edit the network private subnet to Public Subnet
 - add listern 443
+- edit http default 80 to redirect to https
 
 ### create the ACM and the Route 53 record
 - Create the ACM
 - Create the Route 53 record
+
+### code pipeline
+- connect the github connection app
+- build stage --> select the Other build providers
+- Environment variables [PIPELINE_EXECUTION_ID] [#{codepipeline.PipelineExecutionId}]
+- 
+
 
 ## What Need to be Delete
 - Github Token
@@ -140,3 +148,7 @@ Project         | sonarcloud-aws-cp
 - Aws Code Build --> Settings --> connections --> github connections
 - Delete the s3 bucket
 - Delete the EFS
+- delete the load balancer and target group
+- delete the acm
+- delete the Route 53 record
+- delete the ECS Cluster and service
