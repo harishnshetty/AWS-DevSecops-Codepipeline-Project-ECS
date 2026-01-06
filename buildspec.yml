@@ -316,7 +316,7 @@ phases:
       - ls -la dependency-check-reports/ || true
       - ls -la dc_tmp || true
 
-      #  Upload reports (and imagedefinitions) to S3 using CodePipeline execution ID
+      #  Upload reports (and imagedefinitions) to S3 using CodePipeline execution  ID
       - echo "===== Uploading security reports to S3 ====="
       - |
         echo "Pipeline execution: ${PIPELINE_EXECUTION_ID}"
