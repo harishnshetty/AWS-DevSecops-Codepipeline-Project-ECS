@@ -19,7 +19,7 @@ env:
     TRIVY_FAIL_IMAGE: "false"
 
     # EFS... (used only for Dependency-Check DATA cache)
-    EFS_MOUNT_TARGET: "fs-00630cd577654f837.efs.ap-south-1.amazonaws.com:/"
+    EFS_MOUNT_TARGET: "fs-08649ea21051a2682.efs.ap-south-1.amazonaws.com:/" # replace with your EFS mount target
     EFS_MOUNT_DIR: "/efs"
     DP_CHECK_DATA_DIR: "/efs/dependency-check-data"
     SONAR_USER_HOME: "/efs/sonar-cache"
