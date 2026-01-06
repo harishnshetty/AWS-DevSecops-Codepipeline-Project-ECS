@@ -140,7 +140,7 @@ Project         | sonarcloud-aws-cp
 - build stage --> select the Other build providers
 - Environment variables [PIPELINE_EXECUTION_ID] [#{codepipeline.PipelineExecutionId}]
 - Staging deploy --> imagedefinitions.json
-
+- update the Roles permissions in CodePipeline-CodeBuild [for DAST]
 
 ## What Need to be Delete
 - Github Token
@@ -152,3 +152,6 @@ Project         | sonarcloud-aws-cp
 - delete the acm
 - delete the Route 53 record
 - delete the ECS Cluster and service
+- delete the SNS Topic
+- delete the SNS Subscription
+- delete the codepipeline,codebuild,
