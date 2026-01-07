@@ -9,7 +9,7 @@ env:
     S3_BUCKET_NAME: "zomato-report" # replace with your S3 bucket name
 
     # EFS (used ONLY for ZAP install + data cache + ZAP home, NOT for reports)
-    EFS_MOUNT_TARGET: "fs-08649ea21051a2682.efs.ap-south-1.amazonaws.com:/"
+    EFS_MOUNT_TARGET: "fs-0e025854beaec202a.efs.ap-south-1.amazonaws.com:/"
     EFS_MOUNT_DIR: "/efs"
     ZAP_INSTALL_BASE_DIR: "/efs/zap-proxy"
 
